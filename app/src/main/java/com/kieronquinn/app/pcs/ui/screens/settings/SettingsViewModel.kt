@@ -181,7 +181,6 @@ class SettingsViewModelImpl(
     init {
         syncWorker()
         setupLabelResetListener()
-        manifestRepository.refresh()
     }
 
 }

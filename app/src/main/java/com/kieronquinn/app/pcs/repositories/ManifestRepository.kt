@@ -29,6 +29,8 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import retrofit2.Retrofit
 
 interface ManifestRepository {
@@ -73,6 +75,7 @@ class ManifestRepositoryImpl(
 ): ManifestRepository {
 
     private val scope = MainScope()
+    private val refreshLock = Mutex()
     private val manifestService = ManifestService.createService(retrofit, context)
 
     private val repositoryUrl = phenotypeRepository.state.filter {
@@ -93,42 +96,42 @@ class ManifestRepositoryImpl(
         }
     }
 
-    override suspend fun refreshAndWait(): Boolean {
-        if(state.value is ManifestState.Loading) return false
+    override suspend fun refreshAndWait(): Boolean = refreshLock.withLock {
         val repositoryUrl = this@ManifestRepositoryImpl.repositoryUrl.first() ?: run {
             state.emit(ManifestState.NotConfigured)
-            return false
+            return@withLock false
         }
         state.emit(ManifestState.Loading)
-        val manifestKey = context.getManifestKey()
-        val manifests = try {
-            manifestService.getManifest(repositoryUrl)
+        return@withLock try {
+            val manifestKey = context.getManifestKey()
+            val manifests = manifestService.getManifest(repositoryUrl)
                 ?.decryptManifest(context, manifestKey)
                 ?.let { Manifests.parseFrom(it) }
+            if (manifests == null) {
+                state.emit(ManifestState.Error)
+                return@withLock true
+            }
+            val clients = PcsClient.entries.mapNotNull {
+                val version = manifests.manifestList?.firstOrNull { manifest ->
+                    manifest.constraints.client == it.client
+                }?.constraints?.buildId ?: return@mapNotNull null
+                it to version
+            }.toMap()
+            val phoneManifests = manifests.phoneManifestList.mapNotNull {
+                if (!it.id.contains(":")) return@mapNotNull null
+                val parts = it.id.split(":", limit = 2)
+                val id = parts[0]
+                val hash = parts.getOrNull(1) ?: return@mapNotNull null
+                val manifest = PhoneManifest.entries.firstOrNull { m -> id == m.id }
+                    ?: return@mapNotNull null
+                ManifestRepository.PhoneManifestData(manifest, hash) to it.name
+            }.toMap()
+            state.emit(ManifestState.Loaded(clients, phoneManifests))
+            false
         } catch (e: Exception) {
             state.emit(ManifestState.Error)
-            return true
+            true
         }
-        if(manifests == null) {
-            state.emit(ManifestState.Error)
-            return true
-        }
-        val clients = PcsClient.entries.mapNotNull {
-            val version = manifests.manifestList?.firstOrNull { manifest ->
-                manifest.constraints.client == it.client
-            }?.constraints?.buildId ?: return@mapNotNull null
-            it to version
-        }.toMap()
-        val phoneManifests = manifests.phoneManifestList.mapNotNull {
-            if (!it.id.contains(":")) return@mapNotNull null
-            val id = it.id.split(":")[0]
-            val hash = it.id.split(":")[1]
-            val manifest = PhoneManifest.entries.firstOrNull { m -> id == m.id }
-                ?: return@mapNotNull null
-            ManifestRepository.PhoneManifestData(manifest, hash) to it.name
-        }.toMap()
-        state.emit(ManifestState.Loaded(clients, phoneManifests))
-        return false
     }
 
     private suspend fun getManifests(url: String): Manifests? {
