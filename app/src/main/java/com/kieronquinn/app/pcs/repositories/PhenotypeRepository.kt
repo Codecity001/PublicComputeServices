@@ -5,7 +5,9 @@ import com.kieronquinn.app.pcs.model.PcsClient
 import com.kieronquinn.app.pcs.model.PcsClient.BuildId.Namespace
 import com.kieronquinn.app.pcs.model.proto.Labels
 import com.kieronquinn.app.pcs.repositories.PhenotypeRepository.PhenotypeState
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -92,6 +94,7 @@ class PhenotypeRepositoryImpl(
 
     private val scope = MainScope()
     private val refreshLock = Mutex()
+    private var activeRefresh: Deferred<Unit>? = null
 
     override val state = MutableStateFlow<PhenotypeState?>(null)
     override val onVersionsReset = MutableSharedFlow<Unit>()
@@ -102,32 +105,37 @@ class PhenotypeRepositoryImpl(
         }
     }
 
-    override suspend fun refreshAndWait() = refreshLock.withLock {
-        val previous = state.value
-        state.emit(PhenotypeState.Loading(previous))
-        try {
-            if(!deviceConfigPropertiesRepository.isAvailable()) {
-                state.emit(PhenotypeState.Unavailable)
-                return@withLock
-            }
-            val namespaces = Namespace.entries.associateWith {
-                deviceConfigPropertiesRepository.getConfig(it.value)
-            }
-            val labels = namespaces[Namespace.AICORE]?.firstOrNull {
-                it.flag == FLAG_LABELS
-            }?.takeIf { it.value?.isNotBlank() == true }?.getBytes()?.parseLabels()
-            val repository = namespaces[Namespace.DEVICE_PERSONALIZATION_SERVICES]?.firstOrNull {
-                it.flag == FLAG_REPOSITORY
-            }?.value
-            val flags = PcsClient.entries.associateWith {
-                namespaces[it.buildId.namespace]?.firstOrNull { flag ->
-                    flag.flag == it.buildId.flag
-                }?.getLong() ?: 0L
-            }
-            state.emit(PhenotypeState.Loaded(labels, repository, flags))
-        } catch (e: Throwable) {
-            state.emit(PhenotypeState.Unavailable)
+    override suspend fun refreshAndWait() {
+        val deferred = refreshLock.withLock {
+            activeRefresh?.takeIf { it.isActive } ?: scope.async {
+                try {
+                    val previous = state.value
+                    state.emit(PhenotypeState.Loading(previous))
+                    if (!deviceConfigPropertiesRepository.isAvailable()) {
+                        state.emit(PhenotypeState.Unavailable)
+                        return@async
+                    }
+                    val namespaces = Namespace.entries.associateWith {
+                        deviceConfigPropertiesRepository.getConfig(it.value)
+                    }
+                    val labels = namespaces[Namespace.AICORE]?.firstOrNull {
+                        it.flag == FLAG_LABELS
+                    }?.takeIf { it.value?.isNotBlank() == true }?.getBytes()?.parseLabels()
+                    val repository = namespaces[Namespace.DEVICE_PERSONALIZATION_SERVICES]?.firstOrNull {
+                        it.flag == FLAG_REPOSITORY
+                    }?.value
+                    val flags = PcsClient.entries.associateWith {
+                        namespaces[it.buildId.namespace]?.firstOrNull { flag ->
+                            flag.flag == it.buildId.flag
+                        }?.getLong() ?: 0L
+                    }
+                    state.emit(PhenotypeState.Loaded(labels, repository, flags))
+                } catch (e: Throwable) {
+                    state.emit(PhenotypeState.Unavailable)
+                }
+            }.also { activeRefresh = it }
         }
+        deferred.await()
     }
 
     override suspend fun setVersions(versions: Map<PcsClient, Long>, waitForRefresh: Boolean) {

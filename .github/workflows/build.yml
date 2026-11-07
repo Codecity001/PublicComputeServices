@@ -29,14 +29,16 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Extract libsekret.so from official release
+      - name: Extract libsekret.so from latest official release
         run: |
-          curl -fL -s -o /tmp/pcs.apk "https://github.com/KieronQuinn/PublicComputeServices/releases/download/1.0.6/PublicComputeServices-v1.0.6.apk"
+          APK_URL=$(curl -fsSL "https://api.github.com/repos/KieronQuinn/PublicComputeServices/releases/latest" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -n 1)
+          echo "Downloading official APK from: $APK_URL"
+          curl -fL -s -o /tmp/pcs.apk "$APK_URL"
           unzip -q /tmp/pcs.apk "lib/*/libsekret.so" -d /tmp/pcs_extracted
           mkdir -p app/src/main/jniLibs
           cp -r /tmp/pcs_extracted/lib/* app/src/main/jniLibs/
 
-      - name: Configure Keystore (Optional)
+      - name: Configure Keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -54,16 +56,21 @@ jobs:
           fi
 
       - name: Build Release APK
+        id: build_apk
         run: |
           chmod +x ./gradlew
           ./gradlew assembleRelease
-          cp app/build/outputs/apk/release/*.apk PublicComputeServices-v1.0.6.apk
+          VERSION=$(grep -oP 'val tagName = "\K[^"]+' app/build.gradle.kts)
+          APK_NAME="PublicComputeServices-v${VERSION}.apk"
+          cp app/build/outputs/apk/release/*.apk "$APK_NAME"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "apk_name=$APK_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Publish APK to GitHub Releases
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.6-build.${{ github.run_number }}
-          name: PublicComputeServices v1.0.6 (Build #${{ github.run_number }})
-          files: PublicComputeServices-v1.0.6.apk
+          tag_name: v${{ steps.build_apk.outputs.version }}-build.${{ github.run_number }}
+          name: PublicComputeServices v${{ steps.build_apk.outputs.version }} (Build #${{ github.run_number }})
+          files: ${{ steps.build_apk.outputs.apk_name }}
           generate_release_notes: true
