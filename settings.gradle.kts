@@ -26,4 +26,3 @@ dependencyResolutionManagement {
 
 rootProject.name = "Public Compute Services"
 include(":app")
-include(":app:sekret")
