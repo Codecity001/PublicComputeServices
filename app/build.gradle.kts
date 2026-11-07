@@ -8,7 +8,6 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.protobuf)
     alias(libs.plugins.compose.compiler)
-    alias(libs.plugins.sekret)
     alias(libs.plugins.aboutLibraries)
     alias(libs.plugins.parcelize)
 }
@@ -55,9 +54,14 @@ android {
         buildConfigField("String", "TAG_NAME", "\"${tagName}\"")
     }
 
+    val hasReleaseKeystore = currentLocalProperties
+        ?.getProperty("storeFile")
+        ?.takeIf { it.isNotBlank() }
+        ?.let { file(it).exists() } == true
+
     signingConfigs {
-        create("release") {
-            if (currentLocalProperties != null) {
+        if (hasReleaseKeystore && currentLocalProperties != null) {
+            create("release") {
                 storeFile = file(currentLocalProperties.getProperty("storeFile"))
                 storePassword = currentLocalProperties.getProperty("storePassword")
                 keyAlias = currentLocalProperties.getProperty("keyAlias")
@@ -68,13 +72,21 @@ android {
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
         release {
             //Minify is enabled but obfuscation is disabled
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -104,14 +116,6 @@ androidComponents {
         // x86 + x86_64 are not supported by Private Compute Services so no point including them
         variant.packaging.jniLibs.excludes.add("/lib/x86/*.so")
         variant.packaging.jniLibs.excludes.add("/lib/x86_64/*.so")
-    }
-}
-
-sekret {
-    properties {
-        enabled.set(true)
-        packageName.set("com.kieronquinn.app.pcs.sekret")
-        encryptionKey.set(currentLocalProperties!!.getProperty("keyHash"))
     }
 }
 
