@@ -73,6 +73,7 @@ class SettingsViewModelImpl(
     private val workManager = WorkManager.getInstance(context)
     private val autoSync = settingsRepository.autoSync.asFlow()
     private val refreshBus = MutableStateFlow(System.currentTimeMillis())
+    private val isSyncing = MutableStateFlow(false)
 
     private val syncRequired = refreshBus.mapLatest {
         // We use the raw state to show the error in the UI, so don't emit null
@@ -82,13 +83,14 @@ class SettingsViewModelImpl(
     private val syncState = combine(
         manifestRepository.state,
         phenotypeRepository.state,
-        syncRequired.filterNotNull()
-    ) { manifest, phenotypeState, syncRequired ->
+        syncRequired.filterNotNull(),
+        isSyncing
+    ) { manifest, phenotypeState, syncRequired, syncing ->
         val phenotype = phenotypeState?.unwrap()
         when {
+            syncing || phenotype is PhenotypeState.Applying -> SyncState.SYNCING
             manifest is ManifestState.Loading -> SyncState.LOADING
             phenotype is PhenotypeState.Loading -> SyncState.LOADING
-            phenotype is PhenotypeState.Applying -> SyncState.SYNCING
             manifest is ManifestState.Error -> SyncState.ERROR
             syncRequired.phenotype.isNotEmpty() -> SyncState.REQUIRED
             syncRequired.phoneManifests.isNotEmpty() -> SyncState.REQUIRED
@@ -125,8 +127,13 @@ class SettingsViewModelImpl(
     override fun onSyncClicked() {
         viewModelScope.launch {
             val versions = syncRequired.value ?: return@launch
-            syncRepository.performSync(versions, true)
-            refreshBus.emit(System.currentTimeMillis())
+            isSyncing.emit(true)
+            try {
+                syncRepository.performSync(versions, true)
+            } finally {
+                isSyncing.emit(false)
+                refreshBus.emit(System.currentTimeMillis())
+            }
         }
     }
 
@@ -181,7 +188,6 @@ class SettingsViewModelImpl(
     init {
         syncWorker()
         setupLabelResetListener()
-        manifestRepository.refresh()
     }
 
 }

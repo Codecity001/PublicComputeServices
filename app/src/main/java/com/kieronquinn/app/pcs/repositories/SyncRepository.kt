@@ -11,6 +11,8 @@ import com.kieronquinn.app.pcs.repositories.PhenotypeRepository.PhenotypeState
 import com.kieronquinn.app.pcs.repositories.SyncRepository.SyncRequirements
 import com.kieronquinn.app.pcs.utils.extensions.sha256AsHex
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
 interface SyncRepository {
@@ -45,7 +47,8 @@ class SyncRepositoryImpl(
             return null
         }
         val manifestState = manifestRepository.state.value
-        val phenotypeState = phenotypeRepository.state.value
+        val phenotypeState = phenotypeRepository.state.value?.unwrap()
+            ?: phenotypeRepository.state.filter { it !is PhenotypeState.Loading }.first()?.unwrap()
         if(manifestState !is ManifestState.Loaded) return SyncRequirements()
         if(phenotypeState !is PhenotypeState.Loaded) return SyncRequirements()
         val gitHubVersions = manifestState.versions
@@ -67,11 +70,12 @@ class SyncRepositoryImpl(
             phenotypeRepository.setVersions(requirements.phenotype, waitForRefresh)
         }
         if (requirements.phoneManifests.isEmpty()) return
-        val url = withContext(Dispatchers.IO) {
-            ConfigProvider.getRepositoryUrl(context)
-        } ?: return
+        val url = (phenotypeRepository.state.value?.unwrap() as? PhenotypeState.Loaded)?.repository
+            ?: withContext(Dispatchers.IO) {
+                ConfigProvider.getRepositoryUrl(context)
+            } ?: return
         requirements.phoneManifests.forEach {
-            val manifest = manifestRepository.getPhoneManifest(url, it.key.getId()).let { m ->
+            val manifest = manifestRepository.getPhoneManifest(url, it.key.getId())?.let { m ->
                 Base64.encodeToString(m, Base64.DEFAULT)
             } ?: return@forEach
             it.key.manifest.setting(settingsRepository).set(manifest)

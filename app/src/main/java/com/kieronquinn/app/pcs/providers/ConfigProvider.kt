@@ -63,15 +63,17 @@ class ConfigProvider: ContentProvider() {
     }
 
     private fun getRepositoryUrl(): String? {
-        val out = ArrayList<String>()
-        val result = Shell.getShell()
-            .newJob()
-            .to(out, out)
-            .add("device_config get ${DEVICE_PERSONALIZATION_SERVICES.value} $FLAG_REPOSITORY")
-            .exec()
-        return if (result.isSuccess) {
-            out.first()
-        } else null
+        return runCatching {
+            val out = ArrayList<String>()
+            val result = Shell.getShell()
+                .newJob()
+                .to(out, out)
+                .add("device_config get ${DEVICE_PERSONALIZATION_SERVICES.value} $FLAG_REPOSITORY")
+                .exec()
+            if (result.isSuccess) {
+                out.firstOrNull()?.takeIf { it != "null" && it.isNotBlank() }
+            } else null
+        }.getOrNull()
     }
 
     override fun query(

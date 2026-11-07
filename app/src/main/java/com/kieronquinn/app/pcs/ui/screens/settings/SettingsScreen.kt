@@ -219,7 +219,7 @@ private fun LoadedContent(
             onClick = {
                 when (state.syncState) {
                     SyncState.REQUIRED -> interactions.onSyncClicked()
-                    SyncState.ERROR -> interactions.onRefreshClicked()
+                    SyncState.ERROR, SyncState.NOT_REQUIRED -> interactions.onRefreshClicked()
                     else -> {
                         // No-op
                     }
