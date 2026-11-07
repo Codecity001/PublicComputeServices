@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 interface PhenotypeRepository {
 
@@ -89,6 +91,7 @@ class PhenotypeRepositoryImpl(
     }
 
     private val scope = MainScope()
+    private val refreshLock = Mutex()
 
     override val state = MutableStateFlow<PhenotypeState?>(null)
     override val onVersionsReset = MutableSharedFlow<Unit>()
@@ -99,29 +102,32 @@ class PhenotypeRepositoryImpl(
         }
     }
 
-    override suspend fun refreshAndWait() {
-        if(state.value is PhenotypeState.Loading) return
+    override suspend fun refreshAndWait() = refreshLock.withLock {
         val previous = state.value
         state.emit(PhenotypeState.Loading(previous))
-        if(!deviceConfigPropertiesRepository.isAvailable()) {
+        try {
+            if(!deviceConfigPropertiesRepository.isAvailable()) {
+                state.emit(PhenotypeState.Unavailable)
+                return@withLock
+            }
+            val namespaces = Namespace.entries.associateWith {
+                deviceConfigPropertiesRepository.getConfig(it.value)
+            }
+            val labels = namespaces[Namespace.AICORE]?.firstOrNull {
+                it.flag == FLAG_LABELS
+            }?.takeIf { it.value?.isNotBlank() == true }?.getBytes()?.parseLabels()
+            val repository = namespaces[Namespace.DEVICE_PERSONALIZATION_SERVICES]?.firstOrNull {
+                it.flag == FLAG_REPOSITORY
+            }?.value
+            val flags = PcsClient.entries.associateWith {
+                namespaces[it.buildId.namespace]?.firstOrNull { flag ->
+                    flag.flag == it.buildId.flag
+                }?.getLong() ?: 0L
+            }
+            state.emit(PhenotypeState.Loaded(labels, repository, flags))
+        } catch (e: Throwable) {
             state.emit(PhenotypeState.Unavailable)
-            return
         }
-        val namespaces = Namespace.entries.associateWith {
-            deviceConfigPropertiesRepository.getConfig(it.value)
-        }
-        val labels = namespaces[Namespace.AICORE]?.firstOrNull {
-            it.flag == FLAG_LABELS
-        }?.takeIf { it.value?.isNotBlank() == true }?.getBytes()?.parseLabels()
-        val repository = namespaces[Namespace.DEVICE_PERSONALIZATION_SERVICES]?.firstOrNull {
-            it.flag == FLAG_REPOSITORY
-        }?.value
-        val flags = PcsClient.entries.associateWith {
-            namespaces[it.buildId.namespace]?.firstOrNull { flag ->
-                flag.flag == it.buildId.flag
-            }?.getLong() ?: 0L
-        }
-        state.emit(PhenotypeState.Loaded(labels, repository, flags))
     }
 
     override suspend fun setVersions(versions: Map<PcsClient, Long>, waitForRefresh: Boolean) {
